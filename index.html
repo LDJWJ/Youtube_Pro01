@@ -96,15 +96,6 @@
             <input type="number" id="maxSubsInput" class="w-full px-4 py-3 rounded-lg bg-gray-700 text-white border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="예: 30000" value="">
         </div>
     </div>
-    
-    <div class="flex items-center justify-center gap-4 mb-8">
-        <label for="videoTypeSelect" class="block text-sm font-medium">비디오 형식</label>
-        <select id="videoTypeSelect" class="w-1/2 px-4 py-3 rounded-lg bg-gray-700 text-white border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500">
-            <option value="all">전체</option>
-            <option value="long">롱폼</option>
-            <option value="short">숏폼</option>
-        </select>
-    </div>
 
     <button id="analyzeButton" class="w-full px-6 py-3 rounded-lg bg-blue-600 hover:bg-blue-700 transition-colors duration-300 font-bold mb-8">분석하기</button>
 
@@ -120,193 +111,187 @@
 </div>
 
 <script>
-    const apiKeyInput = document.getElementById('apiKeyInput');
-    const regionSelect = document.getElementById('regionSelect');
-    const categorySelect = document.getElementById('categorySelect');
-    const videoCountInput = document.getElementById('videoCountInput');
-    const maxSubsInput = document.getElementById('maxSubsInput');
-    const videoTypeSelect = document.getElementById('videoTypeSelect');
-    const analyzeButton = document.getElementById('analyzeButton');
-    const loadingDiv = document.getElementById('loading');
-    const errorMessageDiv = document.getElementById('errorMessage');
-    const resultsDiv = document.getElementById('results');
-    const videoListDiv = document.getElementById('videoList');
+  const apiKeyInput = document.getElementById('apiKeyInput');
+  const regionSelect = document.getElementById('regionSelect');
+  const categorySelect = document.getElementById('categorySelect');
+  const videoCountInput = document.getElementById('videoCountInput');
+  const maxSubsInput = document.getElementById('maxSubsInput');
+  const videoTypeSelect = document.getElementById('videoTypeSelect');
+  const analyzeButton = document.getElementById('analyzeButton');
+  const loadingDiv = document.getElementById('loading');
+  const errorMessageDiv = document.getElementById('errorMessage');
+  const resultsDiv = document.getElementById('results');
+  const videoListDiv = document.getElementById('videoList');
 
-    // ISO8601 → seconds
-    function parseISO8601Duration(duration) {
-        const m = duration.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?/);
-        if (!m) return 0;
-        const h = parseInt(m[1] || 0, 10);
-        const mi = parseInt(m[2] || 0, 10);
-        const s = parseFloat(m[3] || 0);
-        return h * 3600 + mi * 60 + s;
-    }
+  // ISO8601 → seconds
+  function parseISO8601Duration(duration) {
+    const m = duration.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?/);
+    if (!m) return 0;
+    const h = parseInt(m[1] || 0, 10);
+    const mi = parseInt(m[2] || 0, 10);
+    const s = parseFloat(m[3] || 0);
+    return h * 3600 + mi * 60 + s;
+  }
+  function formatDuration(sec) {
+    sec = Math.floor(sec);
+    const h = Math.floor(sec / 3600);
+    const m = Math.floor((sec % 3600) / 60);
+    const s = sec % 60;
+    const mm = m < 10 ? '0' + m : m;
+    const ss = s < 10 ? '0' + s : s;
+    return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
+  }
+  function showError(msg) {
+    errorMessageDiv.textContent = msg;
+    errorMessageDiv.classList.remove('hidden');
+  }
+  function nf(n) { return Number(n || 0).toLocaleString('ko-KR'); }
 
-    // format seconds to MM:SS or HH:MM:SS
-    function formatDuration(sec) {
-        sec = Math.floor(sec);
-        const h = Math.floor(sec / 3600);
-        const m = Math.floor((sec % 3600) / 60);
-        const s = sec % 60;
-        const mm = m < 10 ? '0' + m : m;
-        const ss = s < 10 ? '0' + s : s;
-        return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
-    }
+  async function fetchJSON(url) {
+    const r = await fetch(url);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    return r.json();
+  }
 
-    // Helper function for formatting numbers
-    function nf(n) { return Number(n || 0).toLocaleString('ko-KR'); }
+  async function collectRecentVideoIds(API_KEY, regionCode, days, maxCollect = 200) {
+    const publishedAfter = new Date(Date.now() - days * 86400000).toISOString();
+    let ids = [];
+    let pageToken = '';
+    while (ids.length < maxCollect) {
+      const params = new URLSearchParams({
+        part: 'id',
+        type: 'video',
+        order: 'date',
+        publishedAfter,
+        regionCode,
+        maxResults: '50',
+        key: API_KEY,
+      });
+      if (pageToken) params.set('pageToken', pageToken);
+      const data = await fetchJSON(`https://www.googleapis.com/youtube/v3/search?${params}`);
+      ids.push(...(data.items || []).map(it => it.id.videoId));
+      pageToken = data.nextPageToken || '';
+      if (!pageToken) break;
+    }
+    return ids;
+  }
 
-    // Helper function for fetching JSON
-    async function fetchJSON(url) {
-      const r = await fetch(url);
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      return r.json();
+  async function chunkedFetchVideosDetails(API_KEY, ids) {
+    const out = [];
+    for (let i = 0; i < ids.length; i += 50) {
+      const chunk = ids.slice(i, i + 50);
+      const params = new URLSearchParams({
+        part: 'snippet,statistics,contentDetails',
+        id: chunk.join(','),
+        key: API_KEY
+      });
+      const data = await fetchJSON(`https://www.googleapis.com/youtube/v3/videos?${params}`);
+      out.push(...(data.items || []));
     }
+    return out;
+  }
 
-    async function collectRecentVideoIds(API_KEY, regionCode, days, maxCollect = 200) {
-        const publishedAfter = new Date(Date.now() - days * 86400000).toISOString();
-        let ids = [];
-        let pageToken = '';
-        while (ids.length < maxCollect) {
-            const params = new URLSearchParams({
-                part: 'id',
-                type: 'video',
-                order: 'date',
-                publishedAfter,
-                regionCode,
-                maxResults: '50',
-                key: API_KEY,
-            });
-            if (pageToken) params.set('pageToken', pageToken);
-            const data = await fetchJSON(`https://www.googleapis.com/youtube/v3/search?${params}`);
-            ids.push(...(data.items || []).map(it => it.id.videoId));
-            pageToken = data.nextPageToken || '';
-            if (!pageToken) break;
-        }
-        return ids;
+  async function fetchChannelsSubs(API_KEY, channelIds) {
+    const subs = new Map();
+    const unique = [...new Set(channelIds)];
+    for (let i = 0; i < unique.length; i += 50) {
+      const chunk = unique.slice(i, i + 50);
+      const params = new URLSearchParams({
+        part: 'statistics,snippet',
+        id: chunk.join(','),
+        key: API_KEY
+      });
+      const data = await fetchJSON(`https://www.googleapis.com/youtube/v3/channels?${params}`);
+      (data.items || []).forEach(ch => {
+        subs.set(ch.id, parseInt(ch.statistics?.subscriberCount || 0, 10));
+      });
     }
+    return subs;
+  }
 
-    async function chunkedFetchVideosDetails(API_KEY, ids) {
-        const out = [];
-        for (let i = 0; i < ids.length; i += 50) {
-            const chunk = ids.slice(i, i + 50);
-            const params = new URLSearchParams({
-                part: 'snippet,statistics,contentDetails',
-                id: chunk.join(','),
-                key: API_KEY
-            });
-            const data = await fetchJSON(`https://www.googleapis.com/youtube/v3/videos?${params}`);
-            out.push(...(data.items || []));
-        }
-        return out;
-    }
+  analyzeButton.addEventListener('click', async () => {
+    const API_KEY = apiKeyInput.value.trim();
+    const regionCode = regionSelect.value;
+    const categoryId = (categorySelect.value || '').trim(); // filter later
+    const topK = Math.min(Math.max(parseInt(videoCountInput.value || 30, 10), 1), 50);
+    const maxSubs = maxSubsInput.value.trim() ? parseInt(maxSubsInput.value, 10) : null;
+    const videoType = videoTypeSelect.value; // all | long | short
 
-    async function fetchChannelsSubs(API_KEY, channelIds) {
-        const subs = new Map();
-        const unique = [...new Set(channelIds)];
-        for (let i = 0; i < unique.length; i += 50) {
-            const chunk = unique.slice(i, i + 50);
-            const params = new URLSearchParams({
-                part: 'statistics,snippet',
-                id: chunk.join(','),
-                key: API_KEY
-            });
-            const data = await fetchJSON(`https://www.googleapis.com/youtube/v3/channels?${params}`);
-            (data.items || []).forEach(ch => {
-                subs.set(ch.id, parseInt(ch.statistics?.subscriberCount || 0, 10));
-            });
-        }
-        return subs;
+    if (!API_KEY) return showError('API 키를 입력해주세요.');
+
+    loadingDiv.classList.remove('hidden');
+    resultsDiv.classList.add('hidden');
+    errorMessageDiv.classList.add('hidden');
+    videoListDiv.innerHTML = '';
+
+    try {
+      // 1) 최근 5일 업로드 수집
+      const ids = await collectRecentVideoIds(API_KEY, regionCode, 5, 200);
+      if (ids.length === 0) return showError('최근 5일 내 업로드된 영상을 찾지 못했습니다.');
+
+      // 2) 상세(통계/길이/카테고리) 조회
+      let videos = await chunkedFetchVideosDetails(API_KEY, ids);
+
+      // 3) 카테고리 필터(선택)
+      if (categoryId) {
+        videos = videos.filter(v => v.snippet?.categoryId === categoryId);
+      }
+
+      // 4) 채널 구독자수 조회
+      const channelIds = videos.map(v => v.snippet?.channelId).filter(Boolean);
+      const subsMap = await fetchChannelsSubs(API_KEY, channelIds);
+
+      // 5) 타입/구독자수 필터
+      videos = videos.filter(v => {
+        const dur = parseISO8601Duration(v.contentDetails?.duration || 'PT0S');
+        if (videoType === 'short' && dur >= 60) return false;
+        if (videoType === 'long' && dur < 60) return false;
+        const subs = subsMap.get(v.snippet.channelId) || 0;
+        if (maxSubs !== null && subs > maxSubs) return false;
+        return true;
+      });
+
+      if (videos.length === 0) return showError('필터 조건에 맞는 영상이 없습니다.');
+
+      // 6) 조회수 기준 정렬 후 상위 N
+      videos.sort((a, b) => (Number(b.statistics?.viewCount || 0) - Number(a.statistics?.viewCount || 0)));
+      const top = videos.slice(0, topK);
+
+      // 7) 렌더링
+      top.forEach((v, idx) => {
+        const durSec = parseISO8601Duration(v.contentDetails?.duration || 'PT0S');
+        const subs = subsMap.get(v.snippet.channelId) || 0;
+        const card = document.createElement('div');
+        card.className = 'card';
+        card.innerHTML = `
+          <a href="https://www.youtube.com/watch?v=${v.id}" target="_blank" rel="noopener noreferrer">
+            <img src="${v.snippet?.thumbnails?.high?.url || ''}" alt="${v.snippet?.title || ''}" class="rounded-lg w-full mb-4">
+          </a>
+          <div class="text-xs text-gray-400 mb-1">#${idx+1}</div>
+          <div class="text-sm text-gray-400">
+            <p class="mb-1"><strong>채널:</strong> <span class="text-blue-300 font-bold">${v.snippet?.channelTitle || '알 수 없음'}</span></p>
+            <p class="mb-1"><strong>구독자 수:</strong> ${nf(subs)}명</p>
+          </div>
+          <h3 class="text-lg font-bold text-blue-300 hover:underline mt-2">${v.snippet?.title || ''}</h3>
+          <div class="text-sm text-gray-400 mt-2">
+            <p class="mb-1"><strong>조회수:</strong> ${nf(v.statistics?.viewCount)}회</p>
+            <p class="mb-1"><strong>좋아요:</strong> ${nf(v.statistics?.likeCount)}개</p>
+            <p class="mb-1"><strong>댓글 수:</strong> ${nf(v.statistics?.commentCount)}개</p>
+            <p class="mb-1"><strong>영상 길이:</strong> ${formatDuration(durSec)}</p>
+            <p class="mb-1"><strong>업로드:</strong> ${new Date(v.snippet?.publishedAt).toLocaleString('ko-KR')}</p>
+          </div>
+        `;
+        videoListDiv.appendChild(card);
+      });
+
+      resultsDiv.classList.remove('hidden');
+    } catch (e) {
+      console.error(e);
+      showError('데이터 수집 중 오류가 발생했습니다. (키/쿼터/네트워크 확인)');
+    } finally {
+      loadingDiv.classList.add('hidden');
     }
-    
-    analyzeButton.addEventListener('click', async () => {
-        const API_KEY = apiKeyInput.value.trim();
-        const regionCode = regionSelect.value;
-        const categoryId = (categorySelect.value || '').trim();
-        const topK = Math.min(Math.max(parseInt(videoCountInput.value || 30, 10), 1), 50);
-        const maxSubs = maxSubsInput.value.trim() ? parseInt(maxSubsInput.value, 10) : null;
-        const videoType = videoTypeSelect.value;
-    
-        if (!API_KEY) return showError('API 키를 입력해주세요.');
-    
-        loadingDiv.classList.remove('hidden');
-        resultsDiv.classList.add('hidden');
-        errorMessageDiv.classList.add('hidden');
-        videoListDiv.innerHTML = '';
-    
-        try {
-            // 1) 최근 5일 업로드 수집
-            const ids = await collectRecentVideoIds(API_KEY, regionCode, 5, 200);
-            if (ids.length === 0) return showError('최근 5일 내 업로드된 영상을 찾지 못했습니다.');
-    
-            // 2) 상세(통계/길이/카테고리) 조회
-            let videos = await chunkedFetchVideosDetails(API_KEY, ids);
-    
-            // 3) 카테고리 필터(선택)
-            if (categoryId) {
-                videos = videos.filter(v => v.snippet?.categoryId === categoryId);
-            }
-    
-            // 4) 채널 구독자수 조회
-            const channelIds = videos.map(v => v.snippet?.channelId).filter(Boolean);
-            const subsMap = await fetchChannelsSubs(API_KEY, channelIds);
-    
-            // 5) 타입/구독자수 필터
-            videos = videos.filter(v => {
-                const dur = parseISO8601Duration(v.contentDetails?.duration || 'PT0S');
-                if (videoType === 'short' && dur >= 60) return false;
-                if (videoType === 'long' && dur < 60) return false;
-                const subs = subsMap.get(v.snippet.channelId) || 0;
-                if (maxSubs !== null && subs > maxSubs) return false;
-                return true;
-            });
-    
-            if (videos.length === 0) return showError('필터 조건에 맞는 영상이 없습니다.');
-    
-            // 6) 조회수 기준 정렬 후 상위 N
-            videos.sort((a, b) => (Number(b.statistics?.viewCount || 0) - Number(a.statistics?.viewCount || 0)));
-            const top = videos.slice(0, topK);
-    
-            // 7) 렌더링
-            top.forEach((v, idx) => {
-                const durSec = parseISO8601Duration(v.contentDetails?.duration || 'PT0S');
-                const subs = subsMap.get(v.snippet.channelId) || 0;
-                const card = document.createElement('div');
-                card.className = 'card';
-                card.innerHTML = `
-                    <a href="https://www.youtube.com/watch?v=${v.id}" target="_blank" rel="noopener noreferrer">
-                        <img src="${v.snippet?.thumbnails?.high?.url || ''}" alt="${v.snippet?.title || ''}" class="rounded-lg w-full mb-4">
-                    </a>
-                    <div class="text-xs text-gray-400 mb-1">#${idx+1}</div>
-                    <div class="text-sm text-gray-400">
-                        <p class="mb-1"><strong>채널:</strong> <span class="text-blue-300 font-bold">${v.snippet?.channelTitle || '알 수 없음'}</span></p>
-                        <p class="mb-1"><strong>구독자 수:</strong> ${nf(subs)}명</p>
-                    </div>
-                    <h3 class="text-lg font-bold text-blue-300 hover:underline mt-2">${v.snippet?.title || ''}</h3>
-                    <div class="text-sm text-gray-400 mt-2">
-                        <p class="mb-1"><strong>조회수:</strong> ${nf(v.statistics?.viewCount)}회</p>
-                        <p class="mb-1"><strong>좋아요:</strong> ${nf(v.statistics?.likeCount)}개</p>
-                        <p class="mb-1"><strong>댓글 수:</strong> ${nf(v.statistics?.commentCount)}개</p>
-                        <p class="mb-1"><strong>영상 길이:</strong> ${formatDuration(durSec)}</p>
-                        <p class="mb-1"><strong>업로드:</strong> ${new Date(v.snippet?.publishedAt).toLocaleString('ko-KR')}</p>
-                    </div>
-                `;
-                videoListDiv.appendChild(card);
-            });
-    
-            resultsDiv.classList.remove('hidden');
-        } catch (e) {
-            console.error(e);
-            showError('데이터 수집 중 오류가 발생했습니다. (키/쿼터/네트워크 확인)');
-        } finally {
-            loadingDiv.classList.add('hidden');
-        }
-    });
-    
-    function showError(msg) {
-        errorMessageDiv.textContent = msg;
-        errorMessageDiv.classList.remove('hidden');
-    }
+  });
 </script>
 
 </body>
